@@ -1,0 +1,35 @@
+# Core ML/AI dependencies
+torch==2.2.0
+torchvision>=0.17.0
+transformers>=4.30.0
+huggingface-hub>=0.16.0
+flash-attn==2.7.0.post2
+
+# Computer vision and image processing
+opencv-python>=4.8.0
+Pillow>=9.5.0
+numpy>=1.24.0
+
+# Qcar2 and Qlabs dependencies (already available in the system)
+# qvl - Quanser Virtual Labs SDK (system installed)
+# pal - Quanser PAL library (system installed)
+
+# Utility libraries
+pyyaml>=6.0
+tqdm>=4.65.0
+matplotlib>=3.7.0
+scipy>=1.10.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+flake8>=6.0.0
+
+# Logging and configuration
+loguru>=0.7.0
+hydra-core>=1.3.0
+
+# Optional: For advanced features
+# accelerate>=0.20.0  # For model optimization
+# bitsandbytes>=0.41.0  # For quantization if needed

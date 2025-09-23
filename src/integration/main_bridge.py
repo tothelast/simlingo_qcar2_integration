@@ -1,0 +1,287 @@
+"""
+Main integration bridge: QLabs QCar2 + SimLingo adapters + model wrapper.
+
+This module orchestrates:
+- QLabs connection and QCar2 actor lifecycle
+- Camera acquisition -> data adapter -> model inference -> control adapter
+- Real-time control loop for basic autonomous driving demo
+"""
+from __future__ import annotations
+
+import sys
+import time
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+# Paths
+HERE = Path(__file__).resolve()
+REPO_ROOT = HERE.parents[3]  # .../Qcar2
+QVL_PATH = REPO_ROOT / "0_libraries" / "python"
+
+# Local imports (do not import QVL yet; delay until connect())
+from adapters.data_adapter import Qcar2DataAdapter
+from adapters.control_adapter import Qcar2ControlAdapter
+from models.simlingo_wrapper import SimLingoModel, ModelInferenceError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DriverConfig:
+    host: str = "localhost"
+    camera: Optional[int] = None  # resolved after importing QVL
+    hz: float = 10.0
+    duration_sec: float = 30.0
+    try_load_weights: bool = False  # heavy; keep False by default
+    # Spawn/initial placement config (tweak to avoid spawning on obstacles)
+    spawn_location: tuple[float, float, float] = (0.0, 0.0, 0.1)
+    spawn_yaw_deg: float = 90.0
+    spawn_autosearch: bool = True  # try a few candidate spots if initial spot collides
+
+
+class SimLingoQcar2Driver:
+    def __init__(self, cfg: DriverConfig) -> None:
+        self.cfg = cfg
+        self.qlabs = None  # type: ignore
+        self.car = None  # type: ignore
+        self.QLabsQCar2 = None  # resolved at runtime
+
+        # Adapters and model
+        self.data_adapter = Qcar2DataAdapter(target_size=(1024, 512))
+        self.control_adapter = Qcar2ControlAdapter(max_forward_speed=2.0, max_turn_angle=0.6)
+        self.model = SimLingoModel(
+            model_root=REPO_ROOT / "simlingo_qcar2_integration" / "models" / "simlingo",
+            simlingo_repo=REPO_ROOT / "simlingo",
+        )
+
+    def connect(self) -> bool:
+        # Add QVL path and import lazily to avoid requiring Quanser package at import-time
+        if str(QVL_PATH) not in sys.path:
+            sys.path.insert(0, str(QVL_PATH))
+        try:
+            from qvl.qlabs import QuanserInteractiveLabs
+            from qvl.qcar2 import QLabsQCar2
+        except Exception as e:
+            logger.error(f"Failed to import QVL modules. Ensure Quanser Python SDK is available: {e}")
+            return False
+
+        # Save class for later use
+        self.QLabsQCar2 = QLabsQCar2
+
+        # Resolve camera if not provided
+        if self.cfg.camera is None:
+            try:
+                self.cfg.camera = QLabsQCar2.CAMERA_CSI_FRONT
+            except Exception:
+                self.cfg.camera = 3  # fallback to typical CSI front camera id
+
+        logger.info("Connecting to QLabs...")
+        self.qlabs = QuanserInteractiveLabs()
+        if not self.qlabs.open(self.cfg.host):
+            logger.error("Unable to connect to QLabs. Ensure QLabs is running and a layout is open.")
+            return False
+        logger.info("Connected to QLabs")
+        return True
+
+    def spawn_vehicle(self) -> bool:
+        assert self.qlabs is not None and self.QLabsQCar2 is not None
+        logger.info("Spawning QCar2 actor...")
+        self.car = self.QLabsQCar2(self.qlabs)
+        status, actor_num = self.car.spawn(location=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1])
+        if status != 0:
+            logger.error(f"Failed to spawn QCar2 (status={status})")
+            return False
+        logger.info(f"QCar2 spawned (actor={actor_num})")
+
+        def try_set(loc_xyz, yaw_deg):
+            try:
+                ok, loc, rot_deg, fv, uv, front_hit, rear_hit = self.car.set_transform_and_request_state_degrees(
+                    location=[float(loc_xyz[0]), float(loc_xyz[1]), float(loc_xyz[2])],
+                    rotation=[0.0, 0.0, float(yaw_deg)],
+                    enableDynamics=True,
+                    headlights=False,
+                    leftTurnSignal=False,
+                    rightTurnSignal=False,
+                    brakeSignal=False,
+                    reverseSignal=False,
+                    waitForConfirmation=True,
+                )
+                return ok, loc, yaw_deg, front_hit, rear_hit
+            except Exception as e:
+                logger.debug(f"set_transform failed for {loc_xyz}, yaw={yaw_deg}: {e}")
+                return False, None, yaw_deg, True, True
+
+        # First, try the configured location
+        chosen = None
+        x, y, z = self.cfg.spawn_location
+        yaw_deg = self.cfg.spawn_yaw_deg
+        ok, loc, yaw_used, front_hit, rear_hit = try_set((x, y, z), yaw_deg)
+        if ok and not front_hit and not rear_hit:
+            chosen = (loc, yaw_used)
+            logger.info(f"Repositioned QCar2 to {loc} yaw={yaw_used:.1f}° (front_hit={front_hit}, rear_hit={rear_hit})")
+        elif self.cfg.spawn_autosearch:
+            # Search a few candidate spots near origin and along axes
+            logger.info("Initial spawn spot seems unsafe; trying alternative spawn candidates...")
+            candidates = [
+                ((0.0, 0.0, 0.12), 0.0),
+                ((0.0, 2.0, 0.12), 0.0),
+                ((0.0, -2.0, 0.12), 180.0),
+                ((2.0, 0.0, 0.12), 90.0),
+                ((-2.0, 0.0, 0.12), -90.0),
+                ((4.0, 0.0, 0.12), 90.0),
+                ((0.0, 4.0, 0.12), 0.0),
+                ((-4.0, 0.0, 0.12), -90.0),
+                ((0.0, -4.0, 0.12), 180.0),
+            ]
+            for (cx, cy, cz), cyaw in candidates:
+                ok, loc, yaw_used, front_hit, rear_hit = try_set((cx, cy, cz), cyaw)
+                if ok and not front_hit and not rear_hit:
+                    chosen = (loc, yaw_used)
+                    logger.info(f"Spawned QCar2 at safe candidate {loc} yaw={yaw_used:.1f}°")
+                    break
+
+        if chosen is None:
+            if ok:
+                logger.warning("Spawned but bumper hit sensors indicate collision; continuing anyway.")
+            else:
+                logger.warning("Reposition request failed; continuing from default spawn.")
+        return True
+
+    def possess_camera(self) -> None:
+        try:
+            assert self.car is not None and self.QLabsQCar2 is not None
+            self.car.possess(camera=self.QLabsQCar2.CAMERA_TRAILING)
+        except Exception as e:
+            logger.warning(f"Could not possess trailing camera (continuing): {e}")
+
+    def initialize_model(self) -> bool:
+        logger.info("Initializing SimLingo model wrapper...")
+        ok = self.model.load(try_load_weights=self.cfg.try_load_weights)
+        if ok:
+            logger.info("SimLingo model ready (real VLA inference; no fallback)")
+        return ok
+
+    def control_loop(self) -> None:
+        assert self.car is not None
+        period = 1.0 / max(1e-3, self.cfg.hz)
+        end_time = time.time() + self.cfg.duration_sec
+        logger.info(f"Starting control loop at {self.cfg.hz:.1f} Hz for {self.cfg.duration_sec:.1f} s")
+
+        while time.time() < end_time:
+            t0 = time.time()
+            try:
+                # 1) Acquire camera
+                img = self.data_adapter.get_qcar2_camera_data(self.car, int(self.cfg.camera))
+                if img is None:
+                    # If no image, stop car briefly
+                    self.control_adapter.send_control_command(self.car, 0.0, 0.0)
+                    time.sleep(period)
+                    continue
+
+                # 2) Prepare model input
+                model_input = self.data_adapter.process_camera_image(img)
+
+                # 3) Model inference (fallback returns speed/turn)
+                out = self.model.inference(model_input)
+
+                # 4) Convert and send to QCar2
+                fwd, turn = self.control_adapter.process_simlingo_output(out)
+                ok, info = self.control_adapter.send_control_command(self.car, fwd, turn)
+
+                # 5) Simple anti-stall: if front bumper hit, back off and steer away
+                if ok and info.get("front_hit"):
+                    logger.info("Front bumper hit detected; executing unstick maneuver.")
+                    # back off slightly with a small left turn
+                    self.control_adapter.send_control_command(self.car, -0.5, -0.2)
+                    time.sleep(0.4)
+                    # stop
+                    self.control_adapter.send_control_command(self.car, 0.0, 0.0)
+
+            except KeyboardInterrupt:
+                logger.info("Interrupted by user. Stopping.")
+                break
+            except ModelInferenceError as e:
+                logger.error(f"Model inference error: {e}. Stopping vehicle and exiting loop.")
+                try:
+                    self.control_adapter.send_control_command(self.car, 0.0, 0.0)
+                except Exception:
+                    pass
+                break
+            except Exception as e:
+                logger.error(f"Loop error: {e}")
+                # Safe stop on error, then continue
+                try:
+                    self.control_adapter.send_control_command(self.car, 0.0, 0.0)
+                except Exception:
+                    pass
+
+            # Maintain loop rate
+            dt = time.time() - t0
+            if dt < period:
+                time.sleep(period - dt)
+
+        # Stop the vehicle at end
+        try:
+            self.control_adapter.send_control_command(self.car, 0.0, 0.0)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            if self.qlabs is not None:
+                self.qlabs.close()
+        except Exception:
+            pass
+
+    def run(self) -> bool:
+        if not self.connect():
+            return False
+        try:
+            if not self.spawn_vehicle():
+                return False
+            self.possess_camera()
+            if not self.initialize_model():
+                logger.error("Model failed to initialize; aborting (no fallback driving).")
+                return False
+            self.control_loop()
+            return True
+        finally:
+            self.close()
+
+
+def run_cli(
+    hz: float = 10.0,
+    duration: float = 30.0,
+    try_load_weights: bool = False,
+    spawn_x: float | None = None,
+    spawn_y: float | None = None,
+    spawn_z: float | None = None,
+    spawn_yaw: float | None = None,
+    spawn_autosearch: bool = True,
+) -> int:
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    # Defaults mirror DriverConfig dataclass defaults
+    def_loc = (0.0, 0.0, 0.1)
+    def_yaw = 90.0
+    cfg = DriverConfig(
+        hz=hz,
+        duration_sec=duration,
+        try_load_weights=try_load_weights,
+        spawn_location=(
+            float(spawn_x) if spawn_x is not None else def_loc[0],
+            float(spawn_y) if spawn_y is not None else def_loc[1],
+            float(spawn_z) if spawn_z is not None else def_loc[2],
+        ),
+        spawn_yaw_deg=float(spawn_yaw) if spawn_yaw is not None else def_yaw,
+        spawn_autosearch=spawn_autosearch,
+    )
+    driver = SimLingoQcar2Driver(cfg)
+    ok = driver.run()
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(run_cli())
+
