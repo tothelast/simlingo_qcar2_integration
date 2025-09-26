@@ -18,6 +18,12 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+class ModelLoadError(RuntimeError):
+    pass
+
+class ModelInferenceError(RuntimeError):
+    pass
+
 class SimLingoModel:
     """Instantiate and run the real SimLingo model from the local repository.
 
