@@ -11,6 +11,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
+from threading import Lock
 
 import numpy as np
 import torch
@@ -47,6 +48,10 @@ class SimLingoModel:
         except Exception:
             self.device = torch.device("cpu")
 
+        # Live instruction (thread-safe)
+        self._instr_lock = Lock()
+        self._instruction = "follow the road. Predict the waypoints."
+
         # Resolve SimLingo repo path
         if simlingo_repo is None:
             # Try <workspace root>/simlingo from this file
@@ -82,6 +87,21 @@ class SimLingoModel:
         if repo not in sys.path:
             sys.path.insert(0, repo)
 
+    def set_instruction(self, text: str) -> None:
+        """Set the current language instruction (thread-safe)."""
+        if text is None:
+            return
+        t = text.strip()
+        if not t:
+            return
+        with self._instr_lock:
+            self._instruction = t
+        logger.info(f"Updated driving instruction: {t}")
+
+    def get_instruction(self) -> str:
+        with self._instr_lock:
+            return self._instruction
+
     def load(self, try_load_weights: bool = False) -> bool:
         """Load SimLingo components directly (no Hydra) and restore weights from checkpoint."""
         try:
@@ -95,125 +115,57 @@ class SimLingoModel:
                 raise ModelLoadError("SimLingo checkpoint not found under models/simlingo/")
             logger.info(f"Found SimLingo checkpoint: {self.checkpoint_file}")
 
-            # Import repo modules and assemble model manually
+            # Load model via original Hydra config to match training exactly
             self._ensure_repo_on_path()
+            from omegaconf import OmegaConf
+            import hydra
             from transformers import AutoProcessor
-            from simlingo_training.models.language_model.llm import LLM
-            from simlingo_training.models.encoder.internvl2_model import LingoInternVLModel
-            from simlingo_training.models.adaptors.adaptors import (
-                DrivingAdaptor, LanguageAdaptor, WaypointInputAdaptor, AdaptorList,
-            )
-            import torch.nn as nn
+            from simlingo_training.utils.internvl2_utils import get_num_image_tokens_per_patch
 
-            variant = "OpenGVLab/InternVL2-1B"
-            processor = AutoProcessor.from_pretrained(variant, trust_remote_code=True)
+            hydra_cfg_path = self.model_root / ".hydra" / "config.yaml"
+            if not hydra_cfg_path.exists():
+                raise ModelLoadError(f"Hydra config not found: {hydra_cfg_path}")
+            cfg = OmegaConf.load(str(hydra_cfg_path))
 
-            # Language model (LoRA-enabled to match checkpoint keys)
-            language_model = LLM(
-                variant=variant,
-                lora=True,
-                lora_alpha=64,
-                lora_r=32,
-                lora_dropout=0.1,
-            )
+            # Processor/tokenizer from language/vision variant used in training
+            lm_variant = cfg.model.language_model.variant
+            self._vision_variant = cfg.model.vision_model.variant
+            processor = AutoProcessor.from_pretrained(lm_variant, trust_remote_code=True)
 
-            # Vision encoder (feature extractor)
-            image_encoder = LingoInternVLModel(variant)
-            image_encoder.processor = processor
-            image_encoder.use_global_img = False
-
-            # Adaptors and waypoint encoder
-            driving = DrivingAdaptor(
-                language_model.hidden_size,
-                speed_wps_mode='2d',
-                predict_route_as_wps=True,
-            )
-            language = LanguageAdaptor(language_model)
-            adaptors = AdaptorList(language=language, driving=driving)
-            wp_encoder = WaypointInputAdaptor(
-                token_size=language_model.hidden_size,
-                hidden_size=256,
-                hidden_size2=512,
+            # Instantiate model exactly like training
+            cache_dir = str(self.model_root.parent / "pretrained")
+            model = hydra.utils.instantiate(
+                cfg.model,
+                cfg_data_module=cfg.data_module,
+                processor=processor,
+                cache_dir=cache_dir,
+                _recursive_=False,
             )
 
-            class MinimalDriving(nn.Module):
-                def __init__(self, language_model, processor, image_encoder, adaptors, wp_encoder):
-                    super().__init__()
-                    self.language_model = language_model
-                    self.processor = processor
-                    self.image_encoder = image_encoder
-                    self.adaptors = adaptors
-                    self.wp_encoder = wp_encoder
-                    # for state_dict compatibility
-                    self.wp_encoder = wp_encoder
-
-                def forward(self, example):
-                    try:
-                        driving_input = example.driving_input
-                    except AttributeError:
-                        driving_input = example
-
-                    adaptor_dict = self.adaptors(example, inference=True)
-                    adaptor_dict = self.image_encoder.replace_placeholder_tokens(
-                        adaptor_dict=adaptor_dict,
-                        pixel_values=driving_input.camera_images,
-                        placeholder_values=driving_input.prompt_inference.placeholder_values,
-                        wp_encoder=self.wp_encoder,
-                    )
-
-                    input_embeds_all = adaptor_dict["language_inputs"]
-                    attention_masks = adaptor_dict["language_inputs_mask"]
-
-                    speed_wps, route, language_out = None, None, []
-                    for b_idx, (input_embed, attention_mask) in enumerate(zip(input_embeds_all, attention_masks)):
-                        input_embed = input_embed.unsqueeze(0)
-                        attention_mask = attention_mask.unsqueeze(0)
-                        tok = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
-                        if self.language_model.variant == 'OpenGVLab/InternVL2-4B':
-                            eos = tok.added_tokens_encoder.get('<|end|>', tok.eos_token_id)
-                        elif self.language_model.variant == 'OpenGVLab/InternVL2-2B':
-                            eos = tok.added_tokens_encoder.get('<|im_end|>', tok.eos_token_id)
-                        else:
-                            eos = tok.eos_token_id
-
-                        sampled_tokens, input_embeds = self.language_model.greedy_sample(
-                            input_embed,
-                            eos_token_id=eos,
-                            max_new_tokens=100,
-                            input_embed_matrix=self.adaptors.language.embed_tokens.weight,
-                            logit_matrix=self.adaptors.language.lm_head.weight,
-                            attention_mask=attention_mask,
-                        )
-
-                        inputs_driving = self.adaptors.driving(example)
-                        input_embed_concat = torch.cat((input_embeds, inputs_driving["inputs"][b_idx].unsqueeze(0)), dim=1)
-                        features, logits = self.language_model.forward(input_embed_concat)
-
-                        len_driving = inputs_driving["inputs"].size(1)
-                        driving_features = features[:, -len_driving:]
-                        driving_logits = logits[:, -len_driving:]
-                        predictions = self.adaptors.driving.get_predictions(driving_features, driving_logits)
-
-                        # Collect first (batch 0)
-                        if predictions.get('speed_wps') is not None:
-                            speed_wps = predictions['speed_wps'] if speed_wps is None else torch.cat((speed_wps, predictions['speed_wps']), dim=0)
-                        if predictions.get('route') is not None:
-                            route = predictions['route'] if route is None else torch.cat((route, predictions['route']), dim=0)
-                        language_out.append((tok.batch_decode(sampled_tokens, skip_special_tokens=True)[0]))
-
-                    return speed_wps, route, language_out
-
-            composite = MinimalDriving(language_model, processor, image_encoder, adaptors, wp_encoder)
-
-            # Load state dict from checkpoint (strict=False for safety)
+            # Load checkpoint strictly and verify keys
             state = torch.load(str(self.checkpoint_file), map_location="cpu")
-            sd = state.get('state_dict', state) if isinstance(state, dict) else state
-            composite.load_state_dict(sd, strict=False)
+            sd = state.get("state_dict", state) if isinstance(state, dict) else state
+            load_res = model.load_state_dict(sd, strict=False)
+            missing = list(load_res.missing_keys)
+            unexpected = list(load_res.unexpected_keys)
+            if missing or unexpected:
+                logger.error(f"Checkpoint key mismatch. Missing: {missing[:8]}{'...' if len(missing)>8 else ''}; Unexpected: {unexpected[:8]}{'...' if len(unexpected)>8 else ''}")
+                raise ModelLoadError("Model architecture does not match checkpoint (strict load failed)")
+            # Enforce strict match
+            model.load_state_dict(sd, strict=True)
 
-            self.model = composite.to(self.device)
+            # Keep handy attributes used at inference
+            self.model = model.to(self.device)
             self.model.eval()
             self.available = True
-            logger.info(f"SimLingo model initialized on {self.device}.")
+            self.processor = processor
+            self._num_img_tokens_per_patch = get_num_image_tokens_per_patch(self._vision_variant)
+            # training flag
+            try:
+                self._use_global_img = bool(cfg.data_module.use_global_img)
+            except Exception:
+                self._use_global_img = False
+            logger.info(f"SimLingo model initialized on {self.device} with Hydra config. Strict checkpoint load succeeded.")
             return True
 
         except Exception as e:
@@ -222,9 +174,14 @@ class SimLingoModel:
             return False
 
     @torch.inference_mode()
-    def inference(self, processed_image: np.ndarray) -> Dict[str, Any]:
-        """Run the SimLingo model and return predicted waypoints.
+    def inference(self, processed_image: np.ndarray, camera_info: Optional[Dict[str, Any]] = None, vehicle_info: Optional[Dict[str, Any]] = None, instruction: Optional[str] = None) -> Dict[str, Any]:
+        """Run the SimLingo model with full training-parity preprocessing.
 
+        Args:
+            processed_image: RGB float32 image in [0,1] range (H,W,3).
+            camera_info: Optional dict with keys {width, height, fov_deg, intrinsics (3x3), extrinsics (4x4)}.
+            vehicle_info: Optional dict with keys {speed_mps: float}.
+            instruction: Optional override for current instruction string.
         Returns:
             { "pred_speed_wps": np.ndarray[N,2], "pred_route": Optional[np.ndarray[M,2]] }
         """
@@ -245,36 +202,30 @@ class SimLingoModel:
             H, W = img.shape[:2]
 
             # Build processor/tokenizer once from model config if accessible
-            # Fallback to InternVL2 default via model.hparams
-            processor = getattr(self.model, "processor", None)
+            processor = getattr(self, "processor", None)
             if processor is None:
-                # Try rebuilding from vision model variant stored in lightning module
+                # Fallback to variant from model
                 variant = getattr(getattr(self.model, "language_model", object()), "variant", None) or \
-                          getattr(getattr(self.model, "vision_model", object()), "variant", None)
-                if variant is None:
-                    raise ModelInferenceError("Cannot resolve vision/language variant for processor.")
+                          getattr(getattr(self.model, "vision_model", object()), "variant", None) or "OpenGVLab/InternVL2-1B"
                 processor = AutoProcessor.from_pretrained(variant, trust_remote_code=True)
 
             tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
 
-            # Image preprocessing: single centered patch to ensure NP>=1
+            # Image preprocessing: dynamic multi-patch to match training
+            pil = Image.fromarray(img).convert("RGB")
             transform = build_transform(input_size=448)
-            pil = Image.fromarray(img)
-            images = [pil]  # single image patch
-            pixel_values = torch.stack([transform(im) for im in images])  # [1,3,448,448]
-            pixel_values = pixel_values.unsqueeze(0).unsqueeze(0)  # [1,T=1,N=1,3,448,448]
-            # Keep float32 to match linear layer biases in auxiliary heads
-            pixel_values = pixel_values.to(self.device, dtype=torch.float32)
+            tiles = dynamic_preprocess(pil, image_size=448, use_thumbnail=self._use_global_img, max_num=6)
+            pv = torch.stack([transform(t) for t in tiles])  # [NP,3,448,448]
+            pixel_values = pv.unsqueeze(0).unsqueeze(0).to(self.device, dtype=torch.float32)  # [B=1,T=1,NP,C,H,W]
 
-            # Minimal prompt: follow the road; build prompt via InternVL chat template with proper image tokens
-            prompt_text = "Current speed: 0.0 m/s. Command: follow the road. Predict the waypoints."
+            # Build prompt via InternVL chat template with proper image tokens
+            text = (instruction if instruction is not None else self.get_instruction()).strip()
+            prompt_text = f"Command: {text}."
             # Determine total number of image tokens based on number of patches (NP)
-            npatches = int(pixel_values.shape[2])  # NP from [B,T,NP,C,H,W]
-            num_image_token = getattr(getattr(self.model, 'image_encoder').model, 'num_image_token', None)
-            if num_image_token is None:
-                num_image_token = getattr(getattr(self.model, 'image_encoder').model.config, 'num_image_token', 256)
-            num_image_tokens_total = int(num_image_token) * max(1, npatches)
-            variant = getattr(self.model.language_model, 'variant', 'OpenGVLab/InternVL2-1B')
+            npatches = int(pixel_values.shape[2])
+            num_image_tokens_total = int(self._num_img_tokens_per_patch) * max(1, npatches)
+            logger.debug(f"dynamic_preprocess: NP={npatches}, num_image_tokens_total={num_image_tokens_total}, src={H}x{W}")
+            variant = getattr(self.model.language_model, 'variant', getattr(self, '_vision_variant', 'OpenGVLab/InternVL2-1B'))
             conversations = [[
                 {"role": "user", "content": [{"type": "text", "text": prompt_text}]},
                 {"role": "assistant", "content": [{"type": "text", "text": ""}]}
@@ -298,10 +249,31 @@ class SimLingoModel:
                 loss_masking=question_dict['loss_masking'].to(self.device),
             )
 
-            # Dummy intrinsics/extrinsics (not used by inference heads)
-            K = torch.eye(3, dtype=torch.float32, device=self.device).unsqueeze(0).unsqueeze(0)[:, 0]
-            E = torch.eye(4, dtype=torch.float32, device=self.device).unsqueeze(0).unsqueeze(0)[:, 0]
-            speed = torch.tensor([[0.0]], dtype=torch.float32, device=self.device)
+            # Camera intrinsics/extrinsics and vehicle context
+            import math
+            if camera_info and isinstance(camera_info, dict) and camera_info.get('intrinsics') is not None:
+                K_np = np.array(camera_info['intrinsics'], dtype=np.float32)
+                logger.debug(f"using provided intrinsics K: {K_np.tolist()}")
+            else:
+                fov = float(camera_info.get('fov_deg', 90.0)) if isinstance(camera_info, dict) else 90.0
+                fx = W / (2.0 * math.tan(fov * math.pi / 360.0))
+                fy = fx
+                cx = W / 2.0
+                cy = H / 2.0
+                K_np = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
+                logger.debug(f"using fallback FOV={fov} deg → intrinsics K: {K_np.tolist()}")
+            K = torch.tensor(K_np, dtype=torch.float32, device=self.device)
+
+            if camera_info and isinstance(camera_info, dict) and camera_info.get('extrinsics') is not None:
+                E_np = np.array(camera_info['extrinsics'], dtype=np.float32)
+                logger.debug(f"using provided extrinsics E: {E_np.tolist()}")
+            else:
+                E_np = np.eye(4, dtype=np.float32)
+                logger.debug("using fallback identity extrinsics E")
+            E = torch.tensor(E_np, dtype=torch.float32, device=self.device)
+
+            spd = float(vehicle_info.get('speed_mps', 0.0)) if isinstance(vehicle_info, dict) else 0.0
+            speed = torch.tensor([[spd]], dtype=torch.float32, device=self.device)
             target_point = torch.tensor([[0.0, 0.0]], dtype=torch.float32, device=self.device)
 
             din = DrivingInput(

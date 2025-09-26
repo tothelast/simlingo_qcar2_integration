@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 class Qcar2DataAdapter:
     """Adapter for converting Qcar2 sensor data to SimLingo format."""
     
-    def __init__(self, target_size: Tuple[int, int] = (1024, 512)):
+    def __init__(self, target_size: Tuple[int, int] = (820, 410)):
         """
         Initialize the data adapter.
-        
+
         Args:
-            target_size: Target image size (width, height) for SimLingo input
+            target_size: Target image size (width, height) for SimLingo input. Default is CSI front cam 820x410.
         """
         self.target_size = target_size
         self.target_width, self.target_height = target_size

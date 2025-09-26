@@ -11,6 +11,10 @@ from __future__ import annotations
 import sys
 import time
 import logging
+import math
+
+import threading
+import select
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -49,12 +53,37 @@ class SimLingoQcar2Driver:
         self.QLabsQCar2 = None  # resolved at runtime
 
         # Adapters and model
-        self.data_adapter = Qcar2DataAdapter(target_size=(1024, 512))
+        # Use the exact CSI camera resolution 820x410 from QVL
+        self.data_adapter = Qcar2DataAdapter(target_size=(820, 410))
         self.control_adapter = Qcar2ControlAdapter(max_forward_speed=2.0, max_turn_angle=0.6)
         self.model = SimLingoModel(
             model_root=REPO_ROOT / "simlingo_qcar2_integration" / "models" / "simlingo",
             simlingo_repo=REPO_ROOT / "simlingo",
         )
+
+        # Runtime state for speed estimation
+        self._last_location: Optional[tuple[float, float, float]] = None
+        self._last_time: Optional[float] = None
+        self._last_speed_mps: float = 0.0
+
+        # QVL CSI front camera calibration (820x410, 160° FOV approximated as pinhole)
+        self._K = [
+            [72.29, 0.0, 410.0],
+            [0.0, 72.29, 205.0],
+            [0.0, 0.0, 1.0],
+        ]
+        self._E = [
+            [1.0, 0.0, 0.0, 1.83],
+            [0.0, 1.0, 0.0, 0.00],
+            [0.0, 0.0, 1.0, 1.10],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        logger.info(f"CSI front camera intrinsics K: {self._K}")
+        logger.info(f"CSI front camera extrinsics E: {self._E}")
+
+        # Instruction input thread controls
+        self._stop_event = threading.Event()
+        self._instr_thread: threading.Thread | None = None
 
     def connect(self) -> bool:
         # Add QVL path and import lazily to avoid requiring Quanser package at import-time
@@ -156,6 +185,58 @@ class SimLingoQcar2Driver:
         except Exception as e:
             logger.warning(f"Could not possess trailing camera (continuing): {e}")
 
+    def _instruction_input_loop(self) -> None:
+        """Background thread: read user instructions from stdin and update model prompt."""
+        logger.info("Instruction input: type a new driving instruction and press Enter (e.g., 'keep right and slow down').")
+        logger.info("Type '/show' to print the current instruction. Ctrl+D to stop input thread.")
+        while not self._stop_event.is_set():
+            try:
+                # poll stdin so we can exit when stop_event is set
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if not rlist:
+                    continue
+                line = sys.stdin.readline()
+                if line == '':  # EOF
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                if line == '/show':
+                    try:
+                        cur = self.model.get_instruction()
+                        logger.info(f"Current instruction: {cur}")
+                    except Exception:
+                        pass
+                    continue
+                # Update model instruction
+                try:
+                    self.model.set_instruction(line)
+                except Exception as e:
+                    logger.warning(f"Failed to set instruction: {e}")
+            except Exception:
+                # Keep the thread alive; don't spam logs
+                time.sleep(0.5)
+
+    def _start_instruction_thread(self) -> None:
+        if self._instr_thread is None or not self._instr_thread.is_alive():
+            self._stop_event.clear()
+            t = threading.Thread(target=self._instruction_input_loop, name="instruction-input", daemon=True)
+            t.start()
+            self._instr_thread = t
+
+    def _stop_instruction_thread(self) -> None:
+        try:
+            self._stop_event.set()
+            if self._instr_thread is not None:
+                self._instr_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+            assert self.car is not None and self.QLabsQCar2 is not None
+            self.car.possess(camera=self.QLabsQCar2.CAMERA_TRAILING)
+        except Exception as e:
+            logger.warning(f"Could not possess trailing camera (continuing): {e}")
+
     def initialize_model(self) -> bool:
         logger.info("Initializing SimLingo model wrapper...")
         ok = self.model.load(try_load_weights=self.cfg.try_load_weights)
@@ -183,12 +264,46 @@ class SimLingoQcar2Driver:
                 # 2) Prepare model input
                 model_input = self.data_adapter.process_camera_image(img)
 
-                # 3) Model inference (fallback returns speed/turn)
-                out = self.model.inference(model_input)
+                # 3) Model inference with real context (CSI front camera 820x410)
+                H, W = model_input.shape[:2]
+                camera_ctx = {
+                    "width": W,
+                    "height": H,
+                    "intrinsics": self._K,
+                    "extrinsics": self._E,
+                }
+                vehicle_ctx = {"speed_mps": float(self._last_speed_mps)}
+                logger.debug(f"vehicle speed used for inference: {self._last_speed_mps:.3f} m/s; image shape={model_input.shape}")
+                out = self.model.inference(model_input, camera_info=camera_ctx, vehicle_info=vehicle_ctx)
+                try:
+                    instr = self.model.get_instruction()
+                    if isinstance(out, dict) and "pred_speed_wps" in out:
+                        wp = out["pred_speed_wps"][0] if out["pred_speed_wps"].ndim >= 2 else out["pred_speed_wps"]
+                        logger.debug(f"Instruction='{instr}' → first predicted wp={wp[0] if len(wp)>0 else wp}")
+                except Exception:
+                    pass
 
                 # 4) Convert and send to QCar2
                 fwd, turn = self.control_adapter.process_simlingo_output(out)
                 ok, info = self.control_adapter.send_control_command(self.car, fwd, turn)
+
+                # 4b) Update speed estimate from location delta
+                try:
+                    now = time.time()
+                    loc = info.get("location")
+                    rot = info.get("rotation")
+                    if loc is not None and rot is not None:
+                        if self._last_location is not None and self._last_time is not None:
+                            dt = max(1e-3, now - self._last_time)
+                            dx = float(loc[0]) - float(self._last_location[0])
+                            dy = float(loc[1]) - float(self._last_location[1])
+                            yaw = float(rot[2])  # radians
+                            fx = math.cos(yaw); fy = math.sin(yaw)
+                            self._last_speed_mps = (dx * fx + dy * fy) / dt
+                        self._last_location = (float(loc[0]), float(loc[1]), float(loc[2]))
+                        self._last_time = now
+                except Exception:
+                    pass
 
                 # 5) Simple anti-stall: if front bumper hit, back off and steer away
                 if ok and info.get("front_hit"):
@@ -245,9 +360,21 @@ class SimLingoQcar2Driver:
             if not self.initialize_model():
                 logger.error("Model failed to initialize; aborting (no fallback driving).")
                 return False
+            # Start instruction input thread (keyboard)
+            try:
+                self._start_instruction_thread()
+                cur = self.model.get_instruction()
+                logger.info(f"Instruction input thread started. Current instruction: {cur}")
+            except Exception as e:
+                logger.warning(f"Could not start instruction input thread: {e}")
             self.control_loop()
             return True
         finally:
+            # Stop input thread and close QLabs
+            try:
+                self._stop_instruction_thread()
+            except Exception:
+                pass
             self.close()
 
 
@@ -261,7 +388,7 @@ def run_cli(
     spawn_yaw: float | None = None,
     spawn_autosearch: bool = True,
 ) -> int:
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     # Defaults mirror DriverConfig dataclass defaults
     def_loc = (0.0, 0.0, 0.1)
     def_yaw = 90.0
