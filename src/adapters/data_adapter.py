@@ -52,7 +52,7 @@ class Qcar2DataAdapter:
             # Normalize to [0, 1] range
             normalized_image = resized_image.astype(np.float32) / 255.0
             
-            logger.debug(f"Processed image: {image.shape} -> {resized_image.shape}")
+
             return normalized_image
             
         except Exception as e:
@@ -74,10 +74,10 @@ class Qcar2DataAdapter:
             success, image_data = qcar2_vehicle.get_image(camera_type)
             
             if success and image_data is not None:
-                logger.debug(f"Successfully retrieved camera data: {image_data.shape}")
+
                 return image_data
             else:
-                logger.warning("Failed to retrieve camera data from Qcar2")
+
                 return None
                 
         except Exception as e:

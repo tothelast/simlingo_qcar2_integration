@@ -64,7 +64,7 @@ class SimLingoModel:
     def _locate_checkpoint(self) -> None:
         ckpt_root = self.model_root / "checkpoints"
         if not ckpt_root.exists():
-            logger.warning(f"No checkpoints directory found at: {ckpt_root}")
+
             return
         epoch_dirs = sorted(ckpt_root.glob("epoch=*"))
         if epoch_dirs:
@@ -96,7 +96,7 @@ class SimLingoModel:
             return
         with self._instr_lock:
             self._instruction = t
-        logger.info(f"Updated driving instruction: {t}")
+
 
     def get_instruction(self) -> str:
         with self._instr_lock:
@@ -113,7 +113,7 @@ class SimLingoModel:
             self._locate_checkpoint()
             if not self.checkpoint_file or not self.checkpoint_file.exists():
                 raise ModelLoadError("SimLingo checkpoint not found under models/simlingo/")
-            logger.info(f"Found SimLingo checkpoint: {self.checkpoint_file}")
+    
 
             # Load model via original Hydra config to match training exactly
             self._ensure_repo_on_path()
@@ -224,7 +224,7 @@ class SimLingoModel:
             # Determine total number of image tokens based on number of patches (NP)
             npatches = int(pixel_values.shape[2])
             num_image_tokens_total = int(self._num_img_tokens_per_patch) * max(1, npatches)
-            logger.debug(f"dynamic_preprocess: NP={npatches}, num_image_tokens_total={num_image_tokens_total}, src={H}x{W}")
+
             variant = getattr(self.model.language_model, 'variant', getattr(self, '_vision_variant', 'OpenGVLab/InternVL2-1B'))
             conversations = [[
                 {"role": "user", "content": [{"type": "text", "text": prompt_text}]},
@@ -253,7 +253,7 @@ class SimLingoModel:
             import math
             if camera_info and isinstance(camera_info, dict) and camera_info.get('intrinsics') is not None:
                 K_np = np.array(camera_info['intrinsics'], dtype=np.float32)
-                logger.debug(f"using provided intrinsics K: {K_np.tolist()}")
+
             else:
                 fov = float(camera_info.get('fov_deg', 90.0)) if isinstance(camera_info, dict) else 90.0
                 fx = W / (2.0 * math.tan(fov * math.pi / 360.0))
@@ -261,15 +261,15 @@ class SimLingoModel:
                 cx = W / 2.0
                 cy = H / 2.0
                 K_np = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
-                logger.debug(f"using fallback FOV={fov} deg → intrinsics K: {K_np.tolist()}")
+
             K = torch.tensor(K_np, dtype=torch.float32, device=self.device)
 
             if camera_info and isinstance(camera_info, dict) and camera_info.get('extrinsics') is not None:
                 E_np = np.array(camera_info['extrinsics'], dtype=np.float32)
-                logger.debug(f"using provided extrinsics E: {E_np.tolist()}")
+
             else:
                 E_np = np.eye(4, dtype=np.float32)
-                logger.debug("using fallback identity extrinsics E")
+
             E = torch.tensor(E_np, dtype=torch.float32, device=self.device)
 
             spd = float(vehicle_info.get('speed_mps', 0.0)) if isinstance(vehicle_info, dict) else 0.0

@@ -76,7 +76,8 @@ class Qcar2ControlAdapter:
                     dx, dy = float(route[idx, 0]), float(route[idx, 1])
                     angle = float(np.arctan2(dy, dx))
                     turn_angle = np.clip(angle, -self.max_turn_angle, self.max_turn_angle)
-                    forward_speed = 1.0  # nominal cruise if only route is available
+                    dist = float(np.hypot(dx, dy))
+                    forward_speed = np.clip(1.5 * dist, -self.max_forward_speed, self.max_forward_speed)
                     return float(forward_speed), float(turn_angle)
 
             # Actions interface
@@ -187,10 +188,9 @@ class Qcar2ControlAdapter:
             }
 
             if success:
-                logger.debug(f"Control command sent: speed={forward_speed:.2f}, turn={turn_angle:.2f}")
                 return True, info
             else:
-                logger.warning("Failed to send control command to Qcar2")
+                logger.error("Failed to send control command to Qcar2")
                 return False, info
 
         except Exception as e:
