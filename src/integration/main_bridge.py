@@ -205,7 +205,8 @@ class SimLingoQcar2Driver:
                     continue
                 if line == '/show':
                     try:
-                        _ = self.model.get_instruction()
+                        cur = self.model.get_instruction()
+                        logger.info(f"Current instruction: {cur}")
                     except Exception:
                         pass
                     continue
