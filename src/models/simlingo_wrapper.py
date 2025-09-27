@@ -124,20 +124,26 @@ class SimLingoModel:
                 raise ModelLoadError(f"Hydra config not found: {hydra_cfg_path}")
             cfg = OmegaConf.load(str(hydra_cfg_path))
 
-            # Processor/tokenizer from language/vision variant used in training
+            # Processor/tokenizer from vision variant to match official training/inference
             lm_variant = cfg.model.language_model.variant
             self._vision_variant = cfg.model.vision_model.variant
-            processor = AutoProcessor.from_pretrained(lm_variant, trust_remote_code=True)
+            processor = AutoProcessor.from_pretrained(cfg.model.vision_model.variant, trust_remote_code=True)
 
             # Instantiate model exactly like training
             cache_dir = str(self.model_root.parent / "pretrained")
-            model = hydra.utils.instantiate(
-                cfg.model,
-                cfg_data_module=cfg.data_module,
-                processor=processor,
-                cache_dir=cache_dir,
-                _recursive_=False,
-            )
+            _prev_dtype = torch.get_default_dtype()
+            if torch.cuda.is_available():
+                torch.set_default_dtype(torch.bfloat16)
+            try:
+                model = hydra.utils.instantiate(
+                    cfg.model,
+                    cfg_data_module=cfg.data_module,
+                    processor=processor,
+                    cache_dir=cache_dir,
+                    _recursive_=False,
+                )
+            finally:
+                torch.set_default_dtype(_prev_dtype)
 
             # Load checkpoint strictly and verify keys
             state = torch.load(str(self.checkpoint_file), map_location="cpu")
@@ -211,9 +217,12 @@ class SimLingoModel:
             # Image preprocessing: dynamic multi-patch to match training
             pil = Image.fromarray(img).convert("RGB")
             transform = build_transform(input_size=448)
-            tiles = dynamic_preprocess(pil, image_size=448, use_thumbnail=self._use_global_img, max_num=6)
+            tiles = dynamic_preprocess(pil, image_size=448, use_thumbnail=self._use_global_img, max_num=2)
             pv = torch.stack([transform(t) for t in tiles])  # [NP,3,448,448]
-            pixel_values = pv.unsqueeze(0).unsqueeze(0).to(self.device, dtype=torch.float32)  # [B=1,T=1,NP,C,H,W]
+            pixel_values = pv.unsqueeze(0).unsqueeze(0).to(
+                self.device,
+                dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            )  # [B=1,T=1,NP,C,H,W]
 
             # Build commentary (Chain-of-Thought) prompt via InternVL chat template
             # Paper: first generate commentary (language) then actions conditioned on it
