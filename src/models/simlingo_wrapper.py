@@ -215,16 +215,21 @@ class SimLingoModel:
             pv = torch.stack([transform(t) for t in tiles])  # [NP,3,448,448]
             pixel_values = pv.unsqueeze(0).unsqueeze(0).to(self.device, dtype=torch.float32)  # [B=1,T=1,NP,C,H,W]
 
-            # Build prompt via InternVL chat template with proper image tokens
-            text = (instruction if instruction is not None else self.get_instruction()).strip()
-            prompt_text = f"Command: {text}."
+            # Build commentary (Chain-of-Thought) prompt via InternVL chat template
+            # Paper: first generate commentary (language) then actions conditioned on it
+            user_instr = (instruction if instruction is not None else self.get_instruction()).strip()
+            commentary_question = (
+                "Instruction: " + user_instr + "\n"
+                "Question: What should the ego vehicle do next and why? "
+                "Respond briefly (1-2 sentences)."
+            )
             # Determine total number of image tokens based on number of patches (NP)
             npatches = int(pixel_values.shape[2])
             num_image_tokens_total = int(self._num_img_tokens_per_patch) * max(1, npatches)
 
             variant = getattr(self.model.language_model, 'variant', getattr(self, '_vision_variant', 'OpenGVLab/InternVL2-1B'))
             conversations = [[
-                {"role": "user", "content": [{"type": "text", "text": prompt_text}]},
+                {"role": "user", "content": [{"type": "text", "text": commentary_question}]},
                 {"role": "assistant", "content": [{"type": "text", "text": ""}]}
             ]]
             _, question_dict = get_custom_chat_template(
@@ -242,7 +247,7 @@ class SimLingoModel:
                 phrase_valid=valid.to(self.device),
                 phrase_mask=mask.to(self.device),
                 placeholder_values=[],
-                language_string=[prompt_text],
+                language_string=[commentary_question],
                 loss_masking=question_dict['loss_masking'].to(self.device),
             )
 
@@ -284,17 +289,36 @@ class SimLingoModel:
                 prompt_inference=ll,
             )
 
-            pred_speed_wps, pred_route, _ = self.model(din)
+            # Run the upstream model (CoT commentary + actions)
+            outputs = self.model(din)
+
+            # Unpack: upstream returns (speed_wps, route, language)
+            pred_speed_wps: Optional[torch.Tensor] = None
+            pred_route: Optional[torch.Tensor] = None
+            language = None
+            if isinstance(outputs, (list, tuple)):
+                if len(outputs) > 0:
+                    pred_speed_wps = outputs[0]
+                if len(outputs) > 1:
+                    pred_route = outputs[1]
+                if len(outputs) > 2:
+                    language = outputs[2]
+            else:
+                pred_speed_wps = outputs
 
             out: Dict[str, Any] = {}
-            if pred_speed_wps is not None and isinstance(pred_speed_wps, torch.Tensor):
+            if isinstance(pred_speed_wps, torch.Tensor):
                 arr = pred_speed_wps.detach().float().cpu().numpy()
                 if arr.ndim >= 3:
                     out["pred_speed_wps"] = arr[0]
-            if pred_route is not None and isinstance(pred_route, torch.Tensor):
+            if isinstance(pred_route, torch.Tensor):
                 arr = pred_route.detach().float().cpu().numpy()
                 if arr.ndim >= 3:
                     out["pred_route"] = arr[0]
+
+            # Language is already decoded to strings by upstream DrivingModel
+            if isinstance(language, (list, tuple)) and len(language) > 0 and isinstance(language[0], str):
+                out["language_text"] = language[0].strip()
 
             if "pred_speed_wps" not in out and "pred_route" not in out:
                 raise ModelInferenceError("No predictions returned by model.")

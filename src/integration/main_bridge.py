@@ -287,7 +287,16 @@ class SimLingoQcar2Driver:
                 vehicle_ctx = {"speed_mps": float(self._last_speed_mps)}
                 out = self.model.inference(model_input, camera_info=camera_ctx, vehicle_info=vehicle_ctx)
 
-                # 4) Convert and send to QCar2
+                # Log only the commentary (language) output
+                try:
+                    lang_txt = out.get("language_text") if isinstance(out, dict) else None
+                    if isinstance(lang_txt, str) and lang_txt.strip():
+                        t = lang_txt.strip()
+                        logger.info(f"lang: {t}")
+                except Exception:
+                    pass
+
+                # 4) Convert and send to QCar2 (no logging)
                 fwd, turn = self.control_adapter.process_simlingo_output(out)
                 ok, info = self.control_adapter.send_control_command(self.car, fwd, turn)
 
