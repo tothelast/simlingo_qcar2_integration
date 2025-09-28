@@ -181,7 +181,7 @@ class SimLingoModel:
         """Run the SimLingo model with full training-parity preprocessing.
 
         Args:
-            processed_image: RGB float32 image in [0,1] range (H,W,3).
+            processed_image: RGB image (H,W,3), either uint8 [0..255] or float32 in [0,1].
             camera_info: Optional dict with keys {width, height, fov_deg, intrinsics (3x3), extrinsics (4x4)}.
             vehicle_info: Optional dict with keys {speed_mps: float}.
             instruction: Optional override for current instruction string.
@@ -201,7 +201,13 @@ class SimLingoModel:
             from simlingo_training.utils.custom_types import DrivingInput, LanguageLabel
             from hydra.utils import to_absolute_path
 
-            img = (np.clip(processed_image, 0.0, 1.0) * 255.0).astype(np.uint8)
+            # Support both uint8 RGB (preferred) and float32 [0,1] RGB for backward compatibility
+            arr = processed_image
+            if isinstance(arr, np.ndarray) and arr.dtype == np.uint8:
+                img = np.ascontiguousarray(arr)
+            else:
+                # assume float in [0,1]; clip and scale to uint8
+                img = (np.clip(arr.astype(np.float32), 0.0, 1.0) * 255.0).astype(np.uint8)
             H, W = img.shape[:2]
 
             # Build processor/tokenizer once from model config if accessible

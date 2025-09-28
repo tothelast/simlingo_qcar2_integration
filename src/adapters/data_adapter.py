@@ -33,7 +33,7 @@ class Qcar2DataAdapter:
             image: Raw camera image from Qcar2 (BGR format from OpenCV)
             
         Returns:
-            Processed image in SimLingo format (RGB, resized)
+            Processed image in SimLingo format (RGB, resized), dtype=uint8
         """
         try:
             # Convert BGR to RGB (OpenCV uses BGR by default)
@@ -43,17 +43,13 @@ class Qcar2DataAdapter:
                 image_rgb = image
                 
             # Resize to target dimensions
-            resized_image = cv2.resize(
-                image_rgb, 
-                self.target_size, 
-                interpolation=cv2.INTER_LINEAR
-            )
+            w,h = image_rgb.shape[1], image_rgb.shape[0]
+            if (w, h) != self.target_size:
+                resized_image = cv2.resize(image_rgb, self.target_size, cv2.INTER_LINEAR)
+            else:
+                resized_image = image_rgb
             
-            # Normalize to [0, 1] range
-            normalized_image = resized_image.astype(np.float32) / 255.0
-            
-
-            return normalized_image
+            return resized_image
             
         except Exception as e:
             logger.error(f"Error processing camera image: {e}")

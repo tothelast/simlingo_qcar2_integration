@@ -69,11 +69,10 @@ class SimLingoQcar2Driver:
         self._last_speed_mps: float = 0.0
 
         # QVL CSI front camera calibration (820x410, 160° FOV approximated as pinhole)
-        self._K = [
-            [72.29, 0.0, 410.0],
-            [0.0, 72.29, 205.0],
-            [0.0, 0.0, 1.0],
-        ]
+        fx = 820.0 / (2.0 * math.tan(math.radians(160.0 / 2.0)))
+        self._K = [[fx, 0.0, 820.0/2.0],
+                   [0.0, fx, 410.0/2.0],
+                   [0.0, 0.0, 1.0]]
         self._E = [
             [1.0, 0.0, 0.0, 1.83],
             [0.0, 1.0, 0.0, 0.00],
