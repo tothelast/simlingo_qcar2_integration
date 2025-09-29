@@ -25,50 +25,67 @@ simlingo_qcar2_integration/
 
 ## Requirements (GPU stack)
 - Ubuntu 24.04, Python 3.12 (project uses venv: `simlingo_env/`)
-- NVIDIA RTX 5070 (or CUDA 12.8 capable GPU)
-- PyTorch 2.8.0+cu128, torchvision 0.23.0+cu128, torchaudio 2.8.0+cu128
-- Core deps: transformers, opencv‑python, pillow, numpy
-- SimLingo/InternVL extras: hydra‑core 1.3.2, omegaconf 2.3.0, pytorch‑lightning ≥ 2.4, einops, timm, peft
+- NVIDIA GPU with CUDA 12.8 support (tested on RTX 5070, works with other CUDA-capable GPUs)
+- Core ML/AI: PyTorch 2.7+, transformers, pytorch-lightning, peft
+- Computer Vision: opencv-python, pillow, numpy
+- Configuration: hydra-core, omegaconf
+- Utilities: einops, timm, huggingface-hub, safetensors
 
 ## Setup
-1) Create and activate venv
+
+### 1) Create and activate virtual environment
 ```bash
-python -m venv simlingo_env
+python3 -m venv simlingo_env
 source simlingo_env/bin/activate
 ```
-2) Install requirements
+
+### 2) Install PyTorch with CUDA support
 ```bash
+# Install PyTorch with CUDA 12.8 support first
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+### 3) Install remaining requirements
+```bash
+# Install all other dependencies
 pip install -r requirements.txt
-# Ensure extras are present (used by InternVL2 & PEFT):
-pip install einops timm peft hydra-core==1.3.2 omegaconf==2.3.0 'pytorch-lightning>=2.4'
 ```
-3) Verify GPU is detected
+
+### 4) Verify GPU detection
 ```bash
-python - << 'PY'
-import torch
-print('torch:', torch.__version__)
-print('cuda available:', torch.cuda.is_available())
-if torch.cuda.is_available():
-    print('device 0:', torch.cuda.get_device_name(0))
-PY
+python -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None')"
 ```
-4) Check model assets
-- SimLingo repo: `../simlingo/` (cloned)
-- Checkpoint: `models/simlingo/checkpoints/epoch=013.ckpt/pytorch_model.pt`
-- InternVL2‑1B will be auto‑downloaded from HuggingFace on first run (large)
+
+### 5) Check model assets
+The project loads models from these locations:
+
+**SimLingo Checkpoint** (required):
+- Path: `models/simlingo/checkpoints/epoch=013.ckpt/pytorch_model.pt`
+- Config: `models/simlingo/.hydra/config.yaml`
+- Status: ✅ Present in repository
+
+**InternVL2-1B Pretrained Model** (auto-downloaded):
+- Path: `pretrained/InternVL2-1B/`
+- Source: Auto-downloaded from HuggingFace (`OpenGVLab/InternVL2-1B`)
+- Status: ✅ Present in repository
+- Size: ~2GB (includes model.safetensors, tokenizer, config files)
+
+**SimLingo Training Code** (required):
+- Path: `simlingo_training/` directory
+- Status: ✅ Present in repository
+- Contains: Model architectures, utilities, data loaders
 
 ## Usage
 Run with QLabs open and a scene loaded.
 ```bash
 source simlingo_env/bin/activate
-python tests/run_basic_integration.py --duration 20 --hz 10 \
-  --spawn-x 0 --spawn-y 0 --spawn-z 0.12 --spawn-yaw 90
+python src/main.py --duration 30 --hz 10 --try-load-weights
 ```
 CLI options:
-- `--duration` (s), `--hz` (loop rate)
-- `--try-load-weights` (optional, loads additional large weights if available)
-- Spawn overrides: `--spawn-x`, `--spawn-y`, `--spawn-z`, `--spawn-yaw`
-- `--no-autosearch` to disable safe‑spawn auto‑search
+- `--duration` (s): How long to run the simulation (default: 30)
+- `--hz` (float): Control loop frequency (default: 10.0)
+- `--try-load-weights`: Attempt to load the large checkpoint weights into CPU memory (optional)
+
 
 ## Control Loop Architecture
 QLabs → QCar2 camera → image preprocessing → SimLingo VLA inference → waypoint→control → QCar2 commands
