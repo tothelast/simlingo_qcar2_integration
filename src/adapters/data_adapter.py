@@ -1,8 +1,5 @@
 """
 Data Adapter for converting Qcar2 sensor data to SimLingo input format.
-
-This module handles the conversion of Qcar2 camera data to the format
-expected by the SimLingo model.
 """
 
 import cv2
@@ -13,7 +10,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Qcar2DataAdapter:
-    """Adapter for converting Qcar2 sensor data to SimLingo format."""
     
     def __init__(self, target_size: Tuple[int, int] = (820, 410)):
         """
@@ -64,7 +60,7 @@ class Qcar2DataAdapter:
             camera_type: Camera type (3 = CAMERA_CSI_FRONT by default)
             
         Returns:
-            Camera image as numpy array or None if failed
+            Camera image as numpy array
         """
         _, image_data = qcar2_vehicle.get_image(camera_type)
         return image_data
