@@ -1,12 +1,10 @@
 # SimLingo ↔ QCar2 (QLabs) Integration
 
-Real SimLingo Vision–Language–Action (VLA) inference driving a QCar2 in QLabs. No fallback policies. GPU‑accelerated on RTX 5070 (CUDA 12.8).
+Real SimLingo Vision–Language–Action (VLA) inference driving a QCar2 in QLabs. GPU‑accelerated on RTX 5070 (CUDA 12.8).
 
 ## Highlights
 - True neural inference: InternVL2‑1B backbone with LoRA (PEFT), loading epoch=013.ckpt
 - End‑to‑end pipeline: QLabs → QCar2 camera → preprocessing → SimLingo VLA → waypoint→control → vehicle commands
-- Graceful failure: stops vehicle and exits loop if inference fails (no hand‑crafted fallback)
-- Spawn system with auto‑search for a safe starting pose and CLI overrides (x,y,z,yaw)
 
 ## Project Structure
 ```
@@ -18,14 +16,11 @@ simlingo_qcar2_integration/
 │   ├── models/
 │   │   └── simlingo_wrapper.py      # Real model load + inference
 │   └── integration/
-│       └── main_bridge.py           # QLabs orchestration + control loop
+│   |    └── main_bridge.py          # QLabs orchestration + control loop
+|   └── main.py                      # Entry point
 ├── models/
-│   └── simlingo/
-│       └── checkpoints/epoch=013.ckpt/pytorch_model.pt
-├── tests/
-│   └── run_basic_integration.py     # CLI to run an end‑to‑end session
-├── docs/                            # Architecture, setup, usage, troubleshooting
-└── requirements.txt
+    └── simlingo/
+        └── checkpoints/epoch=013.ckpt/pytorch_model.pt
 ```
 
 ## Requirements (GPU stack)
@@ -87,13 +82,3 @@ QLabs → QCar2 camera → image preprocessing → SimLingo VLA inference → wa
 - Auto‑search: tries several nearby safe candidates if bumpers report collision
 - Override exact pose with CLI for your layout
 
-## Recent Changes
-- Switched to CUDA 12.8 stack (torch/vision/audio +cu128)
-- Real SimLingo model path wired; removed all fallback/handcrafted driving
-- Correct InternVL2 chat template and image token handling
-- Robust preprocessing to avoid dtype/shape mismatches
-- Graceful failure: stop on inference errors
-- Spawn auto‑search and CLI overrides for track‑aligned placement
-
-## More Documentation
-See docs/ for detailed architecture, setup, usage, troubleshooting, and change log.
