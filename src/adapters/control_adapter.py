@@ -6,7 +6,7 @@ vehicle control commands.
 """
 
 import numpy as np
-from typing import Tuple, Dict, Any
+from typing import Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class Qcar2ControlAdapter:
         self.max_forward_speed = max_forward_speed
         self.max_turn_angle = max_turn_angle
         
-    def process_simlingo_output(self, model_output: Dict[str, Any]) -> Tuple[float, float]:
+    def process_simlingo_output(self, model_output: Dict[str, Any]) -> tuple[float, float]:
         """
         Convert SimLingo predictions to (forward_speed, turn_angle).
         Supports:

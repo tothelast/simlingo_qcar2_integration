@@ -12,6 +12,7 @@ import sys
 import time
 import logging
 import math
+import os
 
 import io
 from contextlib import redirect_stdout, redirect_stderr
@@ -20,16 +21,18 @@ import select
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from qvl.qlabs import QuanserInteractiveLabs
+from qvl.qcar2 import QLabsQCar2
 
 # Paths
 HERE = Path(__file__).resolve()
-REPO_ROOT = HERE.parents[3]  # .../Qcar2
-QVL_PATH = REPO_ROOT / "0_libraries" / "python"
+REPO_ROOT = HERE.parents[2]  # .../simlingo_qcar2_integration
+
 
 # Local imports (do not import QVL yet; delay until connect())
 from adapters.data_adapter import Qcar2DataAdapter
 from adapters.control_adapter import Qcar2ControlAdapter
-from models.simlingo_wrapper import SimLingoModel # ModelInferenceError
+from models.simlingo_wrapper import SimLingoModel
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,7 @@ class SimLingoQcar2Driver:
         self.data_adapter = Qcar2DataAdapter(target_size=(820, 410))
         self.control_adapter = Qcar2ControlAdapter(max_forward_speed=2.0, max_turn_angle=0.6)
         self.model = SimLingoModel(
-            model_root=REPO_ROOT / "simlingo_qcar2_integration" / "models" / "simlingo",
+            model_root=REPO_ROOT / "models" / "simlingo",
         )
 
         # Runtime state for speed estimation
@@ -86,16 +89,6 @@ class SimLingoQcar2Driver:
         self._instr_thread: threading.Thread | None = None
 
     def connect(self) -> bool:
-        # Add QVL path and import lazily to avoid requiring Quanser package at import-time
-        if str(QVL_PATH) not in sys.path:
-            sys.path.insert(0, str(QVL_PATH))
-        try:
-            from qvl.qlabs import QuanserInteractiveLabs
-            from qvl.qcar2 import QLabsQCar2
-        except Exception as e:
-            logger.error(f"Failed to import QVL modules. Ensure Quanser Python SDK is available: {e}")
-            return False
-
         # Save class for later use
         self.QLabsQCar2 = QLabsQCar2
 
@@ -138,21 +131,16 @@ class SimLingoQcar2Driver:
                     waitForConfirmation=True,
                 )
                 return ok, loc, yaw_deg, front_hit, rear_hit
-            except Exception as e:
+            except Exception:
 
                 return False, None, yaw_deg, True, True
 
         # First, try the configured location
-        chosen = None
         x, y, z = self.cfg.spawn_location
         yaw_deg = self.cfg.spawn_yaw_deg
-        ok, loc, yaw_used, front_hit, rear_hit = try_set((x, y, z), yaw_deg)
-        if ok and not front_hit and not rear_hit:
-            chosen = (loc, yaw_used)
-
-        elif self.cfg.spawn_autosearch:
+        ok, _, _, front_hit, rear_hit = try_set((x, y, z), yaw_deg)
+        if not (ok and not front_hit and not rear_hit) and self.cfg.spawn_autosearch:
             # Search a few candidate spots near origin and along axes
-
             candidates = [
                 ((0.0, 0.0, 0.12), 0.0),
                 ((0.0, 2.0, 0.12), 0.0),
@@ -165,24 +153,18 @@ class SimLingoQcar2Driver:
                 ((0.0, -4.0, 0.12), 180.0),
             ]
             for (cx, cy, cz), cyaw in candidates:
-                ok, loc, yaw_used, front_hit, rear_hit = try_set((cx, cy, cz), cyaw)
+                ok, _, _, front_hit, rear_hit = try_set((cx, cy, cz), cyaw)
                 if ok and not front_hit and not rear_hit:
-                    chosen = (loc, yaw_used)
-
                     break
 
-        if chosen is None:
-            if ok:
-                pass
-            else:
-                pass
+
         return True
 
     def possess_camera(self) -> None:
         try:
             assert self.car is not None and self.QLabsQCar2 is not None
             self.car.possess(camera=self.QLabsQCar2.CAMERA_TRAILING)
-        except Exception as e:
+        except Exception:
             pass
 
     def _instruction_input_loop(self) -> None:
@@ -232,26 +214,13 @@ class SimLingoQcar2Driver:
         except Exception:
             pass
 
-            assert self.car is not None and self.QLabsQCar2 is not None
-            self.car.possess(camera=self.QLabsQCar2.CAMERA_TRAILING)
-        except Exception as e:
-            pass
-
     def initialize_model(self) -> bool:
 
         buf_out, buf_err = io.StringIO(), io.StringIO()
-        try:
-            with redirect_stdout(buf_out), redirect_stderr(buf_err):
-                ok = self.model.load(try_load_weights=self.cfg.try_load_weights)
-        finally:
-            captured_out = buf_out.getvalue()
-            captured_err = buf_err.getvalue()
+        with redirect_stdout(buf_out), redirect_stderr(buf_err):
+            ok = self.model.load(try_load_weights=self.cfg.try_load_weights)
         if ok:
             logger.info("SimLingo model ready (real VLA inference; no fallback)")
-        else:
-            # silently ignore captured init logs to avoid noise
-            if captured_out or captured_err:
-                pass
         return ok
 
     def control_loop(self) -> None:
@@ -296,7 +265,7 @@ class SimLingoQcar2Driver:
 
                 # 4) Convert and send to QCar2 (no logging)
                 fwd, turn = self.control_adapter.process_simlingo_output(out)
-                ok, info = self.control_adapter.send_control_command(self.car, fwd, turn)
+                _, info = self.control_adapter.send_control_command(self.car, fwd, turn)
 
                 # 4b) Update speed estimate from location delta
                 try:
@@ -323,13 +292,7 @@ class SimLingoQcar2Driver:
 
             except KeyboardInterrupt:
                 break
-            except ModelInferenceError as e:
-                logger.error(f"Model inference error: {e}. Stopping vehicle and exiting loop.")
-                try:
-                    self.control_adapter.send_control_command(self.car, 0.0, 0.0)
-                except Exception:
-                    pass
-                break
+
             except Exception as e:
                 logger.error(f"Loop error: {e}")
                 # Safe stop on error, then continue

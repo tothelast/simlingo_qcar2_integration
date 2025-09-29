@@ -4,7 +4,7 @@ Data Adapter for converting Qcar2 sensor data to SimLingo input format.
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple
 import logging
 
 logger = logging.getLogger(__name__)
