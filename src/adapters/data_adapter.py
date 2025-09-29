@@ -55,7 +55,7 @@ class Qcar2DataAdapter:
             logger.error(f"Error processing camera image: {e}")
             raise
     
-    def get_qcar2_camera_data(self, qcar2_vehicle, camera_type: int = 3) -> Optional[np.ndarray]:
+    def get_qcar2_camera_data(self, qcar2_vehicle, camera_type: int = 3) -> np.ndarray:
         """
         Get camera data from Qcar2 vehicle.
         
@@ -66,21 +66,11 @@ class Qcar2DataAdapter:
         Returns:
             Camera image as numpy array or None if failed
         """
-        try:
-            success, image_data = qcar2_vehicle.get_image(camera_type)
-            
-            if success and image_data is not None:
-
-                return image_data
-            else:
-
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting camera data: {e}")
-            return None
+        _, image_data = qcar2_vehicle.get_image(camera_type)
+        return image_data
+        
     
-    def prepare_model_input(self, qcar2_vehicle, camera_type: int = 3) -> Optional[np.ndarray]:
+    def prepare_model_input(self, qcar2_vehicle, camera_type: int = 3) -> np.ndarray:
         """
         Complete pipeline: get Qcar2 camera data and prepare for SimLingo.
         
@@ -93,9 +83,6 @@ class Qcar2DataAdapter:
         """
         # Get raw camera data
         raw_image = self.get_qcar2_camera_data(qcar2_vehicle, camera_type)
-        
-        if raw_image is None:
-            return None
             
         # Process for SimLingo
         processed_image = self.process_camera_image(raw_image)
