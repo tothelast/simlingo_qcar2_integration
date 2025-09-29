@@ -29,7 +29,7 @@ QVL_PATH = REPO_ROOT / "0_libraries" / "python"
 # Local imports (do not import QVL yet; delay until connect())
 from adapters.data_adapter import Qcar2DataAdapter
 from adapters.control_adapter import Qcar2ControlAdapter
-from models.simlingo_wrapper import SimLingoModel, ModelInferenceError
+from models.simlingo_wrapper import SimLingoModel # ModelInferenceError
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,6 @@ class SimLingoQcar2Driver:
         self.control_adapter = Qcar2ControlAdapter(max_forward_speed=2.0, max_turn_angle=0.6)
         self.model = SimLingoModel(
             model_root=REPO_ROOT / "simlingo_qcar2_integration" / "models" / "simlingo",
-            simlingo_repo=REPO_ROOT / "simlingo",
         )
 
         # Runtime state for speed estimation
