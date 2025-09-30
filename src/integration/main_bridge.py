@@ -263,8 +263,8 @@ class SimLingoQcar2Driver:
                 except Exception:
                     pass
 
-                # 4) Convert and send to QCar2 (no logging)
-                fwd, turn = self.control_adapter.process_simlingo_output(out)
+                # 4) Convert and send to QCar2 (pass current speed for braking logic)
+                fwd, turn = self.control_adapter.process_simlingo_output(out, current_speed=self._last_speed_mps)
                 _, info = self.control_adapter.send_control_command(self.car, fwd, turn)
 
                 # 4b) Update speed estimate from location delta
