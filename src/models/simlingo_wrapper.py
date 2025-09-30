@@ -92,7 +92,7 @@ class SimLingoModel:
         with self._instr_lock:
             return self._instruction
 
-    def load(self, try_load_weights: bool = False) -> bool:
+    def load(self) -> bool:
         """Load SimLingo components directly (no Hydra) and restore weights from checkpoint."""
         self._locate_checkpoint()
 
