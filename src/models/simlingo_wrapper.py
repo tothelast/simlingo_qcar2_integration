@@ -10,11 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 import logging
 import math
 from typing import Dict, Any, Optional
-from threading import Lock
 
 import numpy as np
 import torch
@@ -49,9 +47,6 @@ class SimLingoModel:
         self.model: Optional[torch.nn.Module] = None
         self.available: bool = False
         self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Live instruction (thread-safe)
-        self._instr_lock = Lock()
         self._instruction = "follow the road. Predict the waypoints."
 
 
@@ -78,19 +73,12 @@ class SimLingoModel:
 
 
     def set_instruction(self, text: str) -> None:
-        """Set the current language instruction (thread-safe)."""
-        if text is None:
-            return
-        t = text.strip()
-        if not t:
-            return
-        with self._instr_lock:
-            self._instruction = t
-
+        """Set the current language instruction."""
+        if text and text.strip():
+            self._instruction = text.strip()
 
     def get_instruction(self) -> str:
-        with self._instr_lock:
-            return self._instruction
+        return self._instruction
 
     def load(self) -> bool:
         """Load SimLingo components directly (no Hydra) and restore weights from checkpoint."""

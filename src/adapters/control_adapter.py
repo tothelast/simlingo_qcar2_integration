@@ -96,19 +96,14 @@ class Qcar2ControlAdapter:
             (success, info) where info includes location, rotation, front_hit, rear_hit
         """
         try:
-            # Determine signals based on speed and steering
-            brake_signal = abs(forward_speed) < 0.1
-            left_turn_signal = turn_angle < -0.1
-            right_turn_signal = turn_angle > 0.1
-
             # Send command to vehicle
             success, location, rotation, front_hit, rear_hit = qcar2_vehicle.set_velocity_and_request_state(
                 forward=forward_speed,
                 turn=turn_angle,
                 headlights=False,
-                leftTurnSignal=left_turn_signal,
-                rightTurnSignal=right_turn_signal,
-                brakeSignal=brake_signal,
+                leftTurnSignal=False,
+                rightTurnSignal=False,
+                brakeSignal=False,
                 reverseSignal=False
             )
 
