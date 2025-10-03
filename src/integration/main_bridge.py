@@ -54,9 +54,7 @@ class SimLingoQcar2Driver:
         # Use the exact CSI camera resolution 820x410 from QVL
         self.data_adapter = Qcar2DataAdapter(target_size=(820, 410))
         self.control_adapter = Qcar2ControlAdapter(max_forward_speed=2.0, max_turn_angle=0.6)
-        self.model = SimLingoModel(
-            model_root=REPO_ROOT / "models" / "simlingo",
-        )
+        self.model = SimLingoModel()
 
         # Runtime state for speed estimation
         self._last_location: Optional[tuple[float, float, float]] = None

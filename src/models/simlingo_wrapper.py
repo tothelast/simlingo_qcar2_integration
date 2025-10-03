@@ -37,39 +37,18 @@ class SimLingoModel:
     """Instantiate and run the real SimLingo model from the local repository.
 
     Requires simlingo_training to be importable (install the submodule, e.g.
-    `pip install -e external/simlingo`). No path fallbacks are used.
+    `pip install -e external/simlingo`). Paths are fixed to ./models/simlingo.
     """
 
-    def __init__(self, model_root: str | Path = "./models/simlingo") -> None:
-        self.model_root = Path(model_root)
-        self.checkpoint_dir: Optional[Path] = None
-        self.checkpoint_file: Optional[Path] = None
+    def __init__(self) -> None:
+        self.model_root = Path("./models/simlingo")
+        self.checkpoint_file = self.model_root / "checkpoints/epoch=013.ckpt/pytorch_model.pt"
+        self.hydra_cfg_path = self.model_root / ".hydra/config.yaml"
+        self.cache_dir = str(self.model_root.parent / "pretrained")
         self.model: Optional[torch.nn.Module] = None
         self.available: bool = False
         self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._instruction = "follow the road. Predict the waypoints."
-
-
-    def _locate_checkpoint(self) -> None:
-        ckpt_root = self.model_root / "checkpoints"
-        if not ckpt_root.exists():
-
-            return
-        epoch_dirs = sorted(ckpt_root.glob("epoch=*"))
-        if epoch_dirs:
-            for d in epoch_dirs:
-                for fname in ("pytorch_model.bin", "pytorch_model.pt"):
-                    candidate = d / fname
-                    if candidate.exists():
-                        self.checkpoint_dir = d
-                        self.checkpoint_file = candidate
-                        return
-        for pattern in ("pytorch_model.bin", "pytorch_model.pt"):
-            candidates = list(ckpt_root.rglob(pattern))
-            if candidates:
-                self.checkpoint_file = candidates[0]
-                self.checkpoint_dir = candidates[0].parent
-                return
 
 
     def set_instruction(self, text: str) -> None:
@@ -81,24 +60,20 @@ class SimLingoModel:
         return self._instruction
 
     def load(self) -> bool:
-        """Load SimLingo components directly (no Hydra) and restore weights from checkpoint."""
-        self._locate_checkpoint()
-
-        hydra_cfg_path = self.model_root / ".hydra" / "config.yaml"
-        cfg = OmegaConf.load(str(hydra_cfg_path))
-
+        """Load SimLingo components directly and restore weights from checkpoint."""
+        # Load Hydra config
+        cfg = OmegaConf.load(str(self.hydra_cfg_path))
 
         # Processor/tokenizer from vision variant to match official training/inference
         self._vision_variant = cfg.model.vision_model.variant
         processor = AutoProcessor.from_pretrained(cfg.model.vision_model.variant, trust_remote_code=True)
 
         # Instantiate model exactly like training
-        cache_dir = str(self.model_root.parent / "pretrained")
         model = hydra.utils.instantiate(
             cfg.model,
             cfg_data_module=cfg.data_module,
             processor=processor,
-            cache_dir=cache_dir,
+            cache_dir=self.cache_dir,
             _recursive_=False,
         )
 
