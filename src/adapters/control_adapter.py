@@ -43,42 +43,29 @@ class Qcar2ControlAdapter:
         Returns:
             (forward_speed, turn_angle) tuple
         """
-        try:
-            # SimLingo outputs pred_speed_wps: [N,2] waypoints at 5 Hz (0.2s intervals)
-            if 'pred_speed_wps' not in model_output:
-                logger.warning("No pred_speed_wps in model output")
-                return 0.0, 0.0
+        # SimLingo outputs pred_speed_wps: [N,2] waypoints at 5 Hz (0.2s intervals)
+        wps = np.asarray(model_output['pred_speed_wps'], dtype=float)
 
-            wps = np.asarray(model_output['pred_speed_wps'], dtype=float)
+        # Original SimLingo speed calculation (finite-difference)
+        # Waypoints are at 5 Hz: wp[0]=t0, wp[1]=t0.2s, wp[2]=t0.4s
+        # desired_speed = ||wp[0] - wp[2]|| * 2.0
+        desired_speed = float(np.linalg.norm(wps[2] - wps[0]) * 2.0)
 
-            if wps.ndim != 2 or wps.shape[1] != 2 or wps.shape[0] < 3:
-                logger.warning(f"Invalid waypoint shape: {wps.shape}, expected [N>=3, 2]")
-                return 0.0, 0.0
+        # Original SimLingo braking logic
+        should_brake = (desired_speed < self.brake_speed) or \
+                        (current_speed > 0.01 and (current_speed / max(desired_speed, 0.01)) > self.brake_ratio)
 
-            # Original SimLingo speed calculation (finite-difference)
-            # Waypoints are at 5 Hz: wp[0]=t0, wp[1]=t0.2s, wp[2]=t0.4s
-            # desired_speed = ||wp[0] - wp[2]|| * 2.0
-            desired_speed = float(np.linalg.norm(wps[2] - wps[0]) * 2.0)
+        if should_brake:
+            forward_speed = 0.0
+        else:
+            forward_speed = np.clip(desired_speed, 0.0, self.max_forward_speed)
 
-            # Original SimLingo braking logic
-            should_brake = (desired_speed < self.brake_speed) or \
-                          (current_speed > 0.01 and (current_speed / max(desired_speed, 0.01)) > self.brake_ratio)
+        # Steering: angle to waypoint at index 2 (0.4s ahead)
+        dx, dy = float(wps[2, 0]), float(wps[2, 1])
+        angle = float(np.arctan2(dy, dx))
+        turn_angle = np.clip(angle, -self.max_turn_angle, self.max_turn_angle)
 
-            if should_brake:
-                forward_speed = 0.0
-            else:
-                forward_speed = np.clip(desired_speed, 0.0, self.max_forward_speed)
-
-            # Steering: angle to waypoint at index 2 (0.4s ahead)
-            dx, dy = float(wps[2, 0]), float(wps[2, 1])
-            angle = float(np.arctan2(dy, dx))
-            turn_angle = np.clip(angle, -self.max_turn_angle, self.max_turn_angle)
-
-            return float(forward_speed), float(turn_angle)
-
-        except Exception as e:
-            logger.error(f"Error processing SimLingo output: {e}")
-            return 0.0, 0.0
+        return float(forward_speed), float(turn_angle)
 
     def send_control_command(self,
                            qcar2_vehicle,
@@ -95,27 +82,23 @@ class Qcar2ControlAdapter:
         Returns:
             (success, info) where info includes location, rotation, front_hit, rear_hit
         """
-        try:
-            # Send command to vehicle
-            success, location, rotation, front_hit, rear_hit = qcar2_vehicle.set_velocity_and_request_state(
-                forward=forward_speed,
-                turn=turn_angle,
-                headlights=False,
-                leftTurnSignal=False,
-                rightTurnSignal=False,
-                brakeSignal=False,
-                reverseSignal=False
-            )
 
-            info = {
-                "location": location,
-                "rotation": rotation,
-                "front_hit": front_hit,
-                "rear_hit": rear_hit,
-            }
+        # Send command to vehicle
+        success, location, rotation, front_hit, rear_hit = qcar2_vehicle.set_velocity_and_request_state(
+            forward=forward_speed,
+            turn=turn_angle,
+            headlights=False,
+            leftTurnSignal=False,
+            rightTurnSignal=False,
+            brakeSignal=False,
+            reverseSignal=False
+        )
 
-            return success, info
+        info = {
+            "location": location,
+            "rotation": rotation,
+            "front_hit": front_hit,
+            "rear_hit": rear_hit,
+        }
 
-        except Exception as e:
-            logger.error(f"Error sending control command: {e}")
-            return False, {"location": [0,0,0], "rotation": [0,0,0], "front_hit": False, "rear_hit": False}
+        return success, info
