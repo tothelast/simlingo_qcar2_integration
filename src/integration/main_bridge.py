@@ -38,7 +38,7 @@ class DriverConfig:
     host: str = "localhost"
     hz: float = 5.0  # SimLingo runs at 5 Hz (0.2s intervals between waypoints)
     duration_sec: float = 30.0
-    spawn_location: tuple[float, float, float] = (0.0, 0.0, 0.1)
+    spawn_location: tuple[float, float, float] = (0.0, -1.0, 0.1)
     spawn_yaw_deg: float = 90.0
 
 
