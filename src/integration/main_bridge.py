@@ -174,11 +174,6 @@ class SimLingoQcar2Driver:
                     self._last_location = (float(loc[0]), float(loc[1]), float(loc[2]))
                     self._last_time = now
 
-
-
-
-
-
             except KeyboardInterrupt:
                 break
             except Exception as e:
