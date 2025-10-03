@@ -168,7 +168,7 @@ class SimLingoModel:
         E_np = np.array(camera_info['extrinsics'], dtype=np.float32)
         E = torch.tensor(E_np, dtype=torch.float32, device=self.device)
 
-        spd = float(vehicle_info.get('speed_mps', 0.0)) if isinstance(vehicle_info, dict) else 0.0
+        spd = float(vehicle_info.get('speed_mps', 0.0)) 
         speed = torch.tensor([[spd]], dtype=torch.float32, device=self.device)
         target_point = torch.tensor([[0.0, 0.0]], dtype=torch.float32, device=self.device)
 
