@@ -106,26 +106,15 @@ class SimLingoModel:
         """
 
         # Support both uint8 RGB (preferred) and float32 [0,1] RGB for backward compatibility
-        arr = processed_image
-        if isinstance(arr, np.ndarray) and arr.dtype == np.uint8:
-            img = np.ascontiguousarray(arr)
-        else:
-            # assume float in [0,1]; clip and scale to uint8
-            img = (np.clip(arr.astype(np.float32), 0.0, 1.0) * 255.0).astype(np.uint8)
+        img = np.ascontiguousarray(processed_image)
+
         H, W = img.shape[:2]
 
         # Build processor/tokenizer once from model config if accessible
         processor = getattr(self, "processor", None)
-        if processor is None:
-            # Fallback to variant from model
-            variant = getattr(getattr(self.model, "language_model", object()), "variant", None) or \
-                        getattr(getattr(self.model, "vision_model", object()), "variant", None) or "OpenGVLab/InternVL2-1B"
-            processor = AutoProcessor.from_pretrained(variant, trust_remote_code=True)
-
         tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
 
         # Image preprocessing: dynamic multi-patch to match training
-
         pil = Image.fromarray(img).convert("RGB")
         transform = build_transform(input_size=448)
         tiles = dynamic_preprocess(pil, image_size=448, use_thumbnail=self._use_global_img, max_num=2)
@@ -174,25 +163,9 @@ class SimLingoModel:
         )
 
         # Camera intrinsics/extrinsics and vehicle context
-        if camera_info and isinstance(camera_info, dict) and camera_info.get('intrinsics') is not None:
-            K_np = np.array(camera_info['intrinsics'], dtype=np.float32)
-
-        else:
-            fov = float(camera_info.get('fov_deg', 90.0)) if isinstance(camera_info, dict) else 90.0
-            fx = W / (2.0 * math.tan(fov * math.pi / 360.0))
-            fy = fx
-            cx = W / 2.0
-            cy = H / 2.0
-            K_np = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
-
+        K_np = np.array(camera_info['intrinsics'], dtype=np.float32)
         K = torch.tensor(K_np, dtype=torch.float32, device=self.device)
-
-        if camera_info and isinstance(camera_info, dict) and camera_info.get('extrinsics') is not None:
-            E_np = np.array(camera_info['extrinsics'], dtype=np.float32)
-
-        else:
-            E_np = np.eye(4, dtype=np.float32)
-
+        E_np = np.array(camera_info['extrinsics'], dtype=np.float32)
         E = torch.tensor(E_np, dtype=torch.float32, device=self.device)
 
         spd = float(vehicle_info.get('speed_mps', 0.0)) if isinstance(vehicle_info, dict) else 0.0
