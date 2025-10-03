@@ -158,9 +158,9 @@ class SimLingoQcar2Driver:
                 out = self.model.inference(model_input, camera_info=camera_ctx, vehicle_info=vehicle_ctx)
 
                 if self.cfg.show_current_instruction:
-                    logger.info(f"Current instruction: {self.model.get_instruction()}")
+                    logger.info(f"\033[96mCurrent instruction: {self.model.get_instruction()}\033[0m")
                 if self.cfg.show_agents_comments and "language_text" in out:
-                    logger.info(f"Agent's comment: {out['language_text']}")
+                    logger.info(f"\033[92mAgent's comment: {out['language_text']}\033[0m")
 
                 # 4) Convert and send to QCar2
                 fwd, turn = self.control_adapter.process_simlingo_output(out, current_speed=self._last_speed_mps)
