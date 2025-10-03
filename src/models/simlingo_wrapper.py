@@ -46,7 +46,6 @@ class SimLingoModel:
         self.hydra_cfg_path = self.model_root / ".hydra/config.yaml"
         self.cache_dir = str(self.model_root.parent / "pretrained")
         self.model: Optional[torch.nn.Module] = None
-        self.available: bool = False
         self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._instruction = "follow the road. Predict the waypoints."
 
