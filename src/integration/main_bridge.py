@@ -40,6 +40,8 @@ class DriverConfig:
     duration_sec: float = 30.0
     spawn_location: tuple[float, float, float] = (0.0, -1.0, 0.1)
     spawn_yaw_deg: float = 90.0
+    show_agents_comments: bool = False
+    show_current_instruction: bool = False
 
 
 class SimLingoQcar2Driver:
@@ -155,6 +157,11 @@ class SimLingoQcar2Driver:
                 vehicle_ctx = {"speed_mps": float(self._last_speed_mps)}
                 out = self.model.inference(model_input, camera_info=camera_ctx, vehicle_info=vehicle_ctx)
 
+                if self.cfg.show_current_instruction:
+                    logger.info(f"Current instruction: {self.model.get_instruction()}")
+                if self.cfg.show_agents_comments and "language_text" in out:
+                    logger.info(f"Agent's comment: {out['language_text']}")
+
                 # 4) Convert and send to QCar2
                 fwd, turn = self.control_adapter.process_simlingo_output(out, current_speed=self._last_speed_mps)
                 _, info = self.control_adapter.send_control_command(self.car, fwd, turn)
@@ -211,6 +218,8 @@ class SimLingoQcar2Driver:
 def run_cli(
     hz: float = 5.0,
     duration: float = 30.0,
+    show_agents_comments: bool = False,
+    show_current_instruction: bool = False,
 ) -> int:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
     logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -220,7 +229,7 @@ def run_cli(
     logging.getLogger("PIL").setLevel(logging.WARNING)
     logging.getLogger("timm").setLevel(logging.WARNING)
 
-    cfg = DriverConfig(hz=hz, duration_sec=duration)
+    cfg = DriverConfig(hz=hz, duration_sec=duration, show_agents_comments=show_agents_comments, show_current_instruction=show_current_instruction)
     driver = SimLingoQcar2Driver(cfg)
     ok = driver.run()
     return 0 if ok else 1
