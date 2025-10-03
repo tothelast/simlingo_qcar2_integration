@@ -47,9 +47,9 @@ class Qcar2ControlAdapter:
         wps = np.asarray(model_output['pred_speed_wps'], dtype=float)
 
         # Original SimLingo speed calculation (finite-difference)
-        # Waypoints are at 5 Hz: wp[0]=t0, wp[1]=t0.2s, wp[2]=t0.4s
-        # desired_speed = ||wp[0] - wp[2]|| * 2.0
-        desired_speed = float(np.linalg.norm(wps[2] - wps[0]) * 2.0)
+        # Waypoints at 5 Hz: use half_second=2 (~0.4s) and one_second=4 (~0.8-1.0s)
+        # desired_speed = ||wp[4] - wp[2]|| * 2.0
+        desired_speed = float(np.linalg.norm(wps[4] - wps[2]) * 2.0)
 
         # Original SimLingo braking logic
         should_brake = (desired_speed < self.brake_speed) or \
